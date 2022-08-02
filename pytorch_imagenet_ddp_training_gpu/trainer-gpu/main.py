@@ -105,7 +105,7 @@ def mp_main():
         for name in models.__dict__
         if name.islower() and not name.startswith("__") and callable(models.__dict__[name])
     )
-    print (f'Model names {model_names}')
+    #print (f'Model names {model_names}')
     
     # CHANGED: Moved argparse to the mp_main() function
     parser = argparse.ArgumentParser(description="PyTorch Elastic ImageNet Training")
@@ -203,15 +203,18 @@ def mp_main():
         args_mp.world_size = int(os.getenv('WORLD_SIZE', -1))
     print (f'WORLD_SIZE={args_mp.world_size}')
 
-    mp.spawn(main, nprocs=args_mp.world_size, args=(args_mp.ngpus_per_node, args_mp) )
+    mp.spawn(main, nprocs=args_mp.ngpus_per_node, args=(args_mp.ngpus_per_node, args_mp) )
 
     end = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print (f'Training complete: {end}')
     # ADDED: End code section
 
-def main(world_size, ngpus_per_node, args):
+def main(gpus, ngpus_per_node, args):
     #CHANGED: Moved parse_args to mp_main(), added args as an input, and set args.rank
     #args = sys.args_mp
+    print (f'gpus={gpus}')
+    print (f'ngpus_per_node={ngpus_per_node}')
+    
     args.rank = int(os.getenv('RANK', 0))
     print (f"main args={args}")
     
