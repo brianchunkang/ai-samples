@@ -63,6 +63,7 @@ from torch.utils.data import DataLoader
 import torch.multiprocessing as mp
 import random # For setting random seed
 import sys #To import args to main()
+import shutil
 from datetime import datetime #Start and end time logging
 # ADDED: End of multiprocessing additions
 
@@ -73,6 +74,7 @@ from datetime import datetime #Start and end time logging
 #writer = SummaryWriter(log_dir=tb_dir)
 # ADDED: End of TB section
 
+'''
 # ADDED: Function for initalizing each process. Copy from example main()
 def init_process(rank, size, run, args, backend='gloo'):
     """ Initialize the distributed environment. """
@@ -80,11 +82,11 @@ def init_process(rank, size, run, args, backend='gloo'):
     os.environ['MASTER_PORT'] = os.getenv('MASTER_PORT', '29500')
     print (f"os MASTER_ADDR={os.getenv('MASTER_ADDR', '127.0.0.1')}")
     print (f"os MASTER_PORT={os.getenv('MASTER_PORT', '29500')}")    
-    dist.init_process_group(backend, rank=rank, world_size=size)
+    dist.init_process_group(backend=backend, rank=rank, world_size=size, init_method="env://")
     run(args)
 # ADDED: End of init_process addition
-
 '''
+
 # ADDED: function to generate random seeds to ensure models are the same in different processes
 def set_random_seeds(random_seed=0):
 
@@ -94,7 +96,7 @@ def set_random_seeds(random_seed=0):
     numpy.random.seed(random_seed)
     random.seed(random_seed)
 # ADDED: end of random seeds section
-'''
+
 
 # ADDED: Added a mp_main() function to be the primary entrypoint. Will call main() as multiple workers
 def mp_main():
@@ -103,6 +105,7 @@ def mp_main():
         for name in models.__dict__
         if name.islower() and not name.startswith("__") and callable(models.__dict__[name])
     )
+    print (f'Model names {model_names}')
     
     # CHANGED: Moved argparse to the mp_main() function
     parser = argparse.ArgumentParser(description="PyTorch Elastic ImageNet Training")
@@ -174,6 +177,12 @@ def mp_main():
         type=str,
         help="checkpoint file path, to load and save to",
     )
+    parser.add_argument(
+        "--ngpus-per-node",
+        default=1,
+        type=int,
+        help="number of gpus on each instance",
+    )
     args_mp = parser.parse_args()
     
     # ADDED: Get environmental variables
@@ -182,55 +191,34 @@ def mp_main():
     print (f"os RANK={os.getenv('RANK', 0)}")
     print (f'Arg - dist_url={args_mp.dist_backend}')
     #print (f'ngpus_per_node={ngpus_per_node}')
-
-    '''
-    # ADDED Call to spawn multiple workers
-    start = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    print (f'Starting training: {start}')       
-    if argv.multiprocessing_distributed:
-        # Since we have ngpus_per_node processes per node, the total world_size
-        # needs to be adjusted accordingly
-        argv.world_size = ngpus_per_node * argv.world_size
-        print ('GPU x WORLD SIZE = {}'.format(argv.world_size))
-        # Use torch.multiprocessing.spawn to launch distributed processes: the
-        # main_worker process function
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, argv))
-    else:
-        # Simply call main_worker function
-        main(argv.gpu, 0, argv)
-    '''
     
-    '''
-    # ADDED: Call to spawn multiple workers
+    # ADDED: Code to spawn multiple workers
     set_random_seeds()
-    '''
     
     start = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print (f'Starting training: {start}')   
     if int(os.getenv('WORLD_SIZE', -1)) == -1:
-        size = 1
+        args_mp.world_size = 1
     else:
-        size = int(os.getenv('WORLD_SIZE', -1))
+        args_mp.world_size = int(os.getenv('WORLD_SIZE', -1))
+    print (f'WORLD_SIZE={args_mp.world_size}')
 
-    #rank = os.getenv('RANK', 0)
-    processes = []
-    mp.set_start_method("spawn")
-    for rank in range(size):
-        p = mp.Process(target=init_process, args=(rank, size, main, args_mp, args_mp.dist_backend))
-        p.start()
-        processes.append(p)
-
-    for p in processes:
-        p.join()
+    mp.spawn(main, nprocs=args_mp.world_size, args=(args_mp.ngpus_per_node, args_mp) )
 
     end = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print (f'Training complete: {end}')
     # ADDED: End code section
 
-def main(args):
-    #CHANGED: Moved parse_args to mp_main() and added args as an input
+def main(world_size, ngpus_per_node, args):
+    #CHANGED: Moved parse_args to mp_main(), added args as an input, and set args.rank
     #args = sys.args_mp
+    args.rank = int(os.getenv('RANK', 0))
     print (f"main args={args}")
+    
+    #ADDED: Copy data to each device
+    new_data_path = shutil.copytree (args.data, '/tmp/gcs')
+    print (f'Copied data location {new_data_path}')
+    args.data = new_data_path
     
     if torch.cuda.is_available() and args.dist_backend == 'nccl':
         device_id = torch.cuda.current_device()
@@ -238,11 +226,11 @@ def main(args):
         print(f"=> set cuda device = {device_id}")
     else:
         device_id = 0
-
-    # comment out process group since it's spawed by the mp_main function
-    #dist.init_process_group(
-    #    backend=args.dist_backend, init_method="env://", timeout=timedelta(seconds=10)
-    #)
+    
+    dist.init_process_group(
+        backend=args.dist_backend, init_method="env://", 
+        world_size=args.world_size, rank=args.rank #, timeout=timedelta(seconds=10)
+    )
 
     model, criterion, optimizer = initialize_model(
         args.arch, args.lr, args.momentum, args.weight_decay, device_id
@@ -258,10 +246,14 @@ def main(args):
     )
 
     start_epoch = state.epoch + 1
-    print(f"=> start_epoch: {start_epoch}, best_acc1: {state.best_acc1}")
+    print(f"=> state_epoch: {state.epoch}, start_epoch: {start_epoch}, best_acc1: {state.best_acc1}")
 
     print_freq = args.print_freq
-    for epoch in range(start_epoch, args.epochs):
+    
+    # CHANGED: To start epoch at 1 at the start of training
+    for epoch in (n+1 for n in range(start_epoch, args.epochs)):
+    #for epoch in range(start_epoch, args.epochs):
+        print (f'Current epoch={epoch}')
         state.epoch = epoch
         train_loader.batch_sampler.sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch, args.lr)
@@ -336,7 +328,7 @@ def initialize_model(
     arch: str, lr: float, momentum: float, weight_decay: float, device_id: int
 ):
     print(f"=> creating model: {arch}")
-    model = models.__dict__[arch]()
+    model = models.__dict__[arch](pretrained=True) #CHANGED: Get the pretrained model
     # For multiprocessing distributed, DistributedDataParallel constructor
     # should always set the single device scope, otherwise,
     # DistributedDataParallel will use all available devices.
