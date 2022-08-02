@@ -215,10 +215,9 @@ def main(world_size, ngpus_per_node, args):
     args.rank = int(os.getenv('RANK', 0))
     print (f"main args={args}")
     
-    #ADDED: Copy data to each device
-    new_data_path = shutil.copytree (args.data, '/tmp/gcs')
-    print (f'Copied data location {new_data_path}')
-    args.data = new_data_path
+    #ADDED: Copy tiny imagenet 200 data to each device
+    shutil.unpack_archive(args.data, '/tmp/gcs')    
+    args.data = '/tmp/gcs/tiny-imagenet-200'
     
     if torch.cuda.is_available() and args.dist_backend == 'nccl':
         device_id = torch.cuda.current_device()
