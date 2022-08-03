@@ -63,7 +63,6 @@ from torch.utils.data import DataLoader
 import torch.multiprocessing as mp
 import random # For setting random seed
 import sys #To import args to main()
-import shutil
 from datetime import datetime #Start and end time logging
 # ADDED: End of multiprocessing additions
 
@@ -189,6 +188,7 @@ def mp_main():
     print (f"os WORLD_SIZE={os.getenv('WORLD_SIZE', -1)}")
     print (f"os LOCAL_WORLD_SIZE={os.getenv('LOCAL_WORLD_SIZE', 1)}")
     print (f"os RANK={os.getenv('RANK', 0)}")
+    print (f"os LOCAL_RANK={os.getenv('LOCAL_RANK', 0)}")
     print (f'Arg - dist_url={args_mp.dist_backend}')
     #print (f'ngpus_per_node={ngpus_per_node}')
     
@@ -201,33 +201,47 @@ def mp_main():
         args_mp.world_size = 1
     else:
         args_mp.world_size = int(os.getenv('WORLD_SIZE', -1))
-    print (f'WORLD_SIZE={args_mp.world_size}')
+        # ADDED: Adjust world size for multiple GPUs
+        args_mp.world_size = args_mp.ngpus_per_node * args_mp.world_size
+    print ('WORLD SIZE = {}'.format(args_mp.world_size))
 
+    print ('Copying data to instance')
+    mp.spawn(copy_data, nprocs=1, args=(args_mp.ngpus_per_node, args_mp) )
+    print ('Copying complete')
     mp.spawn(main, nprocs=args_mp.ngpus_per_node, args=(args_mp.ngpus_per_node, args_mp) )
 
     end = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     print (f'Training complete: {end}')
     # ADDED: End code section
 
+def copy_data (gpus, ngpus_per_node, args):
+    #ADDED: Copy tiny imagenet 200 data to each device
+    data_path = '/tmp/gcs'
+    shutil.unpack_archive(args.data, data_path)
+    
 def main(gpus, ngpus_per_node, args):
     #CHANGED: Moved parse_args to mp_main(), added args as an input, and set args.rank
     #args = sys.args_mp
     print (f'gpus={gpus}')
     print (f'ngpus_per_node={ngpus_per_node}')
-    
-    args.rank = int(os.getenv('RANK', 0))
     print (f"main args={args}")
     
-    #ADDED: Copy tiny imagenet 200 data to each device
-    shutil.unpack_archive(args.data, '/tmp/gcs')    
-    args.data = '/tmp/gcs/tiny-imagenet-200'
-    
     if torch.cuda.is_available() and args.dist_backend == 'nccl':
-        device_id = torch.cuda.current_device()
+        device_id = gpus
         torch.cuda.set_device(device_id)
         print(f"=> set cuda device = {device_id}")
     else:
         device_id = 0
+    
+    data_path = '/tmp/gcs'
+    args.data = f'{data_path}/tiny-imagenet-200'
+    
+    #ADDED: Adjust rank for multiple gpu nodes
+    args.rank = int(os.getenv('RANK', 0))
+    args.rank = args.rank * ngpus_per_node + gpus
+    print (f"rank = {args.rank}")
+    
+    print (f"Distributed and Multiprocesing. Setting rank for each worker. rank={args.rank}")
     
     dist.init_process_group(
         backend=args.dist_backend, init_method="env://", 
@@ -273,6 +287,7 @@ def main(gpus, ngpus_per_node, args):
         if device_id == 0:
             save_checkpoint(state, is_best, args.checkpoint_file)
 
+    dist.destroy_process_group() 
 
 class State:
     """
